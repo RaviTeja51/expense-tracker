@@ -4,12 +4,15 @@ import com.personal.expenseapi.exception.UnAuthorizedAccessException;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.impl.crypto.DefaultJwtSignatureValidator;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.stereotype.Service;
 
+import javax.crypto.spec.SecretKeySpec;
 import java.security.Key;
 import java.util.Date;
 import java.util.HashMap;
@@ -20,23 +23,35 @@ import java.util.function.Function;
 public class JwtService {
 
     private ExpenseUserService userService;
+    private UserDetailsService userDetailsService;
 
     @Autowired
-    public JwtService(ExpenseUserService userService) {
+    public JwtService(ExpenseUserService userService, UserDetailsService userDetailsService) {
         this.userService = userService;
+        this.userDetailsService = userDetailsService;
     }
 
     private static final String JWT_SALT = "!A%D*G-KaPdSgUkXp2s5v8y/B?E(H+Mb";
 
-    public boolean isValidJwToken(String authHeader) throws UnAuthorizedAccessException {
-        if(!authHeader.startsWith("Bearer ")){
-            throw new UnAuthorizedAccessException("MISSING BEARER TOKEN",
-                    "Authorization token not found", HttpStatus.UNAUTHORIZED.toString());
+    public boolean isValidJwToken(String token, UserDetails userDetails) throws UnAuthorizedAccessException {
+
+        String[] chunks = token.split("\\.");
+
+        SignatureAlgorithm sa = SignatureAlgorithm.HS256;
+        SecretKeySpec keySpec =  new SecretKeySpec(JWT_SALT.getBytes(),sa.getJcaName());
+
+        String tokenWithoutSignature = chunks[0] + "." + chunks[1];
+        String signature = chunks[2];
+        DefaultJwtSignatureValidator validator = new DefaultJwtSignatureValidator(sa, keySpec);
+
+        if (!validator.isValid(tokenWithoutSignature, signature)) {
+            throw new UnAuthorizedAccessException("INVALID JWT TOKEN","Couldn't verify the token",
+                    HttpStatus.UNAUTHORIZED.toString());
         }
-
-        String token = authHeader.substring(7);
-        String username = extractClaim(token,Claims::getSubject);
-
+        if(isTokenExpired(token)){
+            throw new UnAuthorizedAccessException("INVALID JWT TOKEN","Token expired",
+                    HttpStatus.UNAUTHORIZED.toString());
+        }
         return true;
     }
 
@@ -64,6 +79,19 @@ public class JwtService {
     private <T> T extractClaim(String token, Function<Claims,T> claimResolver){
         final Claims claims = extractAllClaims(token);
         return claimResolver.apply(claims);
+    }
+
+    public String getUserNameToken(String token){
+       return  extractClaim(token, Claims::getSubject);
+    }
+
+    public Date getExpirationDateFromToken(String token){
+        return extractClaim(token,Claims::getExpiration);
+    }
+
+    private Boolean isTokenExpired(String token){
+        Date expirationDate = getExpirationDateFromToken(token);
+        return expirationDate.before(new Date());
     }
 
     private Key getSigningKey(){
